@@ -75,13 +75,21 @@ def build_sam2(
     mode="eval",
     load_image_encoder=True,
     hydra_overrides_extra=[],
+    apply_postprocessing=True,
     **kwargs,
 ):
 
+    if apply_postprocessing:
+        hydra_overrides_extra = hydra_overrides_extra.copy()
+        hydra_overrides_extra += [
+            # dynamically fall back to multi-mask if the single mask is not stable
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
+            "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
+        ]
     # Read config and init model
     config_name = f'{config_dir}/{config_file}' if config_dir is not None else config_file
-
-    cfg = compose(config_name=config_name)
+    cfg = compose(config_name=config_name, overrides=hydra_overrides_extra)
     OmegaConf.resolve(cfg)
     model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path, load_image_encoder=load_image_encoder)
@@ -98,11 +106,18 @@ def build_sam2_video_predictor(
     mode="eval",
     hydra_overrides_extra=[],
     apply_postprocessing=True,
+    vos_optimized=False,
     **kwargs,
 ):
     hydra_overrides = [
         "++model._target_=nanosam2.sam2.sam2_video_predictor.SAM2VideoPredictor",
     ]
+    if vos_optimized:
+        hydra_overrides = [
+            "++model._target_=sam2.sam2_video_predictor.SAM2VideoPredictorVOS",
+            "++model.compile_image_encoder=True",  # Let sam2_base handle this
+        ]
+
     if apply_postprocessing:
         hydra_overrides_extra = hydra_overrides_extra.copy()
         hydra_overrides_extra += [
@@ -191,6 +206,13 @@ def _load_checkpoint(model, ckpt_path, load_image_encoder=True):
             for k in list(sd.keys()):
                 if "image_encoder" in k:
                     del sd[k]
+        
         missing_keys, unexpected_keys = model.load_state_dict(sd, strict=load_image_encoder)
 
+        if missing_keys:
+            logging.error(missing_keys)
+            raise RuntimeError()
+        if unexpected_keys:
+            logging.error(unexpected_keys)
+            raise RuntimeError()
         logging.info("Loaded checkpoint sucessfully")

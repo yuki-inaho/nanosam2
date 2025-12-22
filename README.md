@@ -3,23 +3,30 @@ This repository is inspired by https://github.com/NVIDIA-AI-IOT/nanosam and adap
 Although the inference speed of the SAM2.1 Hiera backbones is already quite fast on GPUs, it is still difficult to deploy on edge devices.
 This repository aims to provide a more efficient alternative for SAM2.1 inference, with a focus on backbones that are smaller and faster to deploy.
 
+## Installation
 
-## Dependencies and Prerequirements
+### Dependencies and Prerequirements
 
- - Create a new Python 3.10+ environment and clone the repository.
+ - Create a new Python 3.12+ environment and clone the repository.
  - Install the dependencies listed below:
 
 ```
-pip install matplotlib torchvision tqdm hydra-core pycocotools requests iopath
+pip install matplotlib torchvision tqdm hydra-core pycocotools requests iopath opencv-python
 ```
 
  - Install the repository as editable package `pip install -e .`
 
-## Inference
+### Download checkpoints
+
+You can find and download pretrained nanosam2 checkpoints [here](https://drive.google.com/drive/folders/15wApVHwqJGunjDP_cx5YZDCTEKliOMCQ?usp=sharing). Each backbone was trained for 10 epochs on 14 SA1 datasets, i.e. ~175k images. 
+
+## Inference Demos
+
+All inference demos are executed on the [Bedroom](https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/notebooks/videos/bedroom.mp4) video file, shared in the original [sam2](https://github.com/facebookresearch/sam2) repository. 
 
 ### Video
 
-Load all frames of a video at once into Nanosam2 and perform tracking of objects from any frame. To use the script you have to obtain all frames of the video as `.jpg` file. Place all `.jpg` files
+Load all frames of a video at once into Nanosam2 and perform tracking of objects from any frame. To run the video demo you have to obtain all frames of the video as `.jpg` file. Place all `.jpg` files
 in the same directory and pass the directory to `video_frames_demo.py`. 
 
 Extracting all frames of a video uns FFmpeg:
@@ -36,7 +43,7 @@ python demos/video_frames_demo.py --config nanosam2.1_resnet18.yaml --checkpoint
 
 ### Camera Live Stream
 
-Stream a video (of a camera or a video file) frame by frame into Nanosam2. Perform tracking of objects from any frame.
+Stream a video (from a camera or video file source) frame by frame into Nanosam2. Start object tracking from any frame in the stream.
 
 
 For ResNet18 backend:
@@ -122,9 +129,9 @@ python nanosam2/tools/compute_eval_coco_metric.py results/sam2.1_hiera_s_resnet1
 
 
 ## Results FP32
-You can find pretrained nanosam2 checkpoints [here](https://drive.google.com/drive/folders/15wApVHwqJGunjDP_cx5YZDCTEKliOMCQ?usp=sharing).
 
 Each backbone was trained for 10 epochs on 14 SA1 datasets, i.e. ~175k images.
+
 | Backbone | num_epochs | mIoU  All | mIoU Small | mIoU Medium | mIoU Large |
 | -------- | -------- | -------- | -------- | -------- | -------- |
 | resnet18 | 10 | 0.69 | 0.62 | 0.73 | 0.76 |

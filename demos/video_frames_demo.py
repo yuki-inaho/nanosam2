@@ -3,7 +3,7 @@
 # Run inferences on the frames exported form a video.
 #
 # To run this script, create a new python environment (3.12) install all packages listed in the README.md file
-# and add the "nanosam2" directory to your pythonpath.
+# and add the "nanosam2" directory to your pythonpath (or install the package).
 # If you are using bash add the following line to your .bashrc
 # export PYTHONPATH="<path-to>/nanosam2"
 
@@ -102,13 +102,20 @@ inference_state = predictor.init_state(video_path=args.video)
 
 predictor.reset_state(inference_state)
 
+# ---------------------------------------------------------------------------
+# for demo video: https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/notebooks/videos/bedroom.mp4
+# ---------------------------------------------------------------------------
+
 print("\n#1: Set two points and predict a mask...")
 ann_frame_idx = 0  # the frame index we interact with
 ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
 
 # Add a positive click at (x, y).
 # For labels, `1` means positive click and `0` means negative click
-points = np.array([[770, 420], [750, 380]], dtype=np.float32)
+
+
+# Add two points on the shirt of the girl.
+points = np.array([[388, 139], [414, 165]], dtype=np.float32)
 labels = np.array([1,1], np.int32)
 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
     inference_state=inference_state,
@@ -155,10 +162,10 @@ ann_frame_idx = 0  # the frame index we interact with
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
 
 # Add a positive click at (x, y).
-points = np.array([[560, 350], [770, 420], [750, 380]], dtype=np.float32)
+points = np.array([[379, 149], [102, 138], [100, 172]], dtype=np.float32)
 labels = np.array([1,1,1], np.int32)
 # Box coordinates.
-box = np.array([400, 320, 1100, 650], dtype=np.float32)
+box = np.array([370, 111, 427, 185], dtype=np.float32)
 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
     inference_state=inference_state,
     frame_idx=ann_frame_idx,

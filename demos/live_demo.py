@@ -1,4 +1,10 @@
-# Live Demo
+# Nanosam2 Live Demo
+#
+# Run inferences on a video stram from a camera or a video file.
+#
+# To run this script, create a new python environment (3.12) install all packages listed in the README.md file
+# and add the "nanosam2" directory to your pythonpath (or install the package).
+#
 # Based on "https://github.com/Gy920/segment-anything-2-real-time/blob/main/demo/demo.py".
 
 
@@ -14,10 +20,11 @@ parser = argparse.ArgumentParser(description='Run benchmarks on different device
 parser.add_argument("--config", type=str, default="sam2_hiera_s", help="The path to a sam2 config.")
 parser.add_argument("--checkpoint", type=str, default="sam2_checkpoints/sam2.1_hiera_small.pt")
 parser.add_argument('--video', default=0, help='Path to a video or a camera id, default: 0')
+parser.add_argument('--device', default="cpu", help='Device to run the model on, default: cpu, also supports cuda')
 args = parser.parse_args()
 
 # Configure Device.
-device = "cuda"
+device = args.device
 if device == "cuda":
     # use bfloat16 for the entire notebook
     torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
@@ -67,12 +74,31 @@ while True:
         predictor.load_first_frame(frame)
         if_init = True
 
-        ann_frame_idx = 0  # the frame index we interact with
-        ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
-        # Let's add a positive click at (x, y) = (210, 350) to get started
+        # ---------------------------------------------------------------------------
+        # for demo video: https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/notebooks/videos/bedroom.mp4
+        # ---------------------------------------------------------------------------
+        
+        # Add bbox - boy
+        ann_frame_idx = 0  # frame index to annotate
+        ann_obj_id = 1  # unique object id to annotate
+        bbox = np.array([[230, 134], [294, 219]], dtype=np.float32)
+        _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
+            frame_idx=ann_frame_idx, obj_id=ann_obj_id, bbox=bbox
+        )
 
+        # Add bbox - girl
+        ann_frame_idx = 0  # frame index to annotate
+        ann_obj_id = 2  # unique object id to annotate
+        bbox = np.array([[353, 11], [451, 122]], dtype=np.float32)
+        _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
+            frame_idx=ann_frame_idx, obj_id=ann_obj_id, bbox=bbox
+        )
 
-        ##! add points, `1` means positive click and `0` means negative click
+        # ---------------------------------------------------------------------------
+        # other bounding box, mask and point examples
+        # ---------------------------------------------------------------------------
+                
+        # Add points, `1` means positive click and `0` means negative click
         # points = np.array([[660, 267]], dtype=np.float32)
         # labels = np.array([1], dtype=np.int32)
 
@@ -80,13 +106,7 @@ while True:
         #     frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=points, labels=labels
         # )
 
-        ## ! add bbox
-        bbox = np.array([[600, 214], [765, 286]], dtype=np.float32)
-        _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
-            frame_idx=ann_frame_idx, obj_id=ann_obj_id, bbox=bbox
-        )
-
-        ##! add mask
+        # Add mask
         # mask_img_path="../notebooks/masks/aquarium/aquarium_mask.png"
         # mask = cv2.imread(mask_img_path, cv2.IMREAD_GRAYSCALE)
         # mask = mask / 255
