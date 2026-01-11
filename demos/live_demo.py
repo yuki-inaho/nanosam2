@@ -39,22 +39,30 @@ predictor = build_sam2_camera_predictor(args.config, args.checkpoint, device=tor
 frametimes = []
 
 def _compile_model_blocks(model, model_settings:list, compile_backend):
+    if (all(model_settings) == False):
+        print("Skipping Model Compilation...")
+        return model
     print("Compiling Model...")
     if model_settings[0]: # image_encoder
+        print(" - Compiling Image Encoder...")
         model.image_encoder = torch.compile(model.image_encoder, backend=compile_backend, dynamic=False)
     if model_settings[1]: # memory_attention
+        print(" - Compiling Memory Attention...")
         model.memory_attention = torch.compile(model.memory_attention, backend=compile_backend)
     if model_settings[2]: # sam_mask_decoder
+        print(" - Compiling SAM Mask Decoder...")
         model.sam_mask_decoder = torch.compile(model.sam_mask_decoder, backend=compile_backend)
     if model_settings[3]: # sam_prompt_encoder
+        print(" - Compiling SAM Prompt Encoder...")
         model.sam_prompt_encoder = torch.compile(model.sam_prompt_encoder, backend=compile_backend)
     if model_settings[4]: # memory_encoder
+        print(" - Compiling Memory Encoder...")
         model.memory_encoder = torch.compile(model.memory_encoder, backend=compile_backend)
     print("Compile finished.")
     return model
 
 # Compile Model if Required.
-#predictor = _compile_model_blocks(predictor, [True, False, False, False, False], "inductor")
+predictor = _compile_model_blocks(predictor, [False, False, False, False, False], "inductor")
 
 # Open Video Stream.
 cap = cv2.VideoCapture(args.video)
