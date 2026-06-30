@@ -49,6 +49,38 @@ class MaskDecoderOnnxWrapper(torch.nn.Module):
             high_res_features=[high_res_feature_0, high_res_feature_1],
         )
 
+
+class PromptEncoderOnnxWrapper(torch.nn.Module):
+    """ONNX-friendly prompt encoder for points and boxes.
+
+    The ONNX input uses SAM prompt labels directly:
+    0=negative point, 1=positive point, 2=box top-left, 3=box bottom-right,
+    -1=padding. The output tensors feed the mask decoder ONNX model.
+    """
+
+    def __init__(self, prompt_encoder: torch.nn.Module):
+        super().__init__()
+        self.prompt_encoder = prompt_encoder
+
+    def forward(self, prompt_coords: torch.Tensor, prompt_labels: torch.Tensor):
+        sparse_embeddings = self.prompt_encoder._embed_points(
+            prompt_coords,
+            prompt_labels,
+            pad=False,
+        )
+        batch_size = prompt_coords.shape[0]
+        dense_embeddings = self.prompt_encoder.no_mask_embed.weight.reshape(
+            1, -1, 1, 1
+        ).expand(
+            batch_size,
+            -1,
+            self.prompt_encoder.image_embedding_size[0],
+            self.prompt_encoder.image_embedding_size[1],
+        )
+        image_pe = self.prompt_encoder.get_dense_pe()
+        return sparse_embeddings, dense_embeddings, image_pe
+
+
 def modify_filename(file_path, str_extension="_modified") -> Path:
     """
     Add the string str_extension before the file extension to the name of a file.
@@ -194,6 +226,13 @@ def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,51
                 "high_res_feature_0",
                 "high_res_feature_1",
             ]
+        case "prompt-encoder":
+            torch_model = PromptEncoderOnnxWrapper(predictor.sam_prompt_encoder)
+            torch_input = (
+                torch.zeros(1, 8, 2, dtype=torch.float32),
+                -torch.ones(1, 8, dtype=torch.int64),
+            )
+            input_names = ["prompt_coords", "prompt_labels"]
         case "mask-decoder-transformer":
             torch_model = predictor.sam_mask_decoder.transformer
             #tokens_limit = 16
@@ -321,6 +360,7 @@ if __name__ == "__main__":
         "image-encoder-trunk",
         "image-encoder-neck",
         "mask-decoder",
+        "prompt-encoder",
         "mask-decoder-transformer",
         "memory-encoder",
         "memory-attention"
