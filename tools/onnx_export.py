@@ -14,6 +14,41 @@ import numpy as np
 import onnxruntime as ort
 import onnxsim
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class MaskDecoderOnnxWrapper(torch.nn.Module):
+    """ONNX-friendly wrapper for SAM2.1 mask decoder.
+
+    SAM2's MaskDecoder.forward requires Python boolean flags and optional
+    high-resolution feature maps. The raw module is inconvenient to export
+    directly, so this wrapper fixes the non-tensor flags and exposes only the
+    tensors required at runtime.
+    """
+
+    def __init__(self, mask_decoder: torch.nn.Module):
+        super().__init__()
+        self.mask_decoder = mask_decoder
+
+    def forward(
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        sparse_prompt_embeddings: torch.Tensor,
+        dense_prompt_embeddings: torch.Tensor,
+        high_res_feature_0: torch.Tensor,
+        high_res_feature_1: torch.Tensor,
+    ):
+        return self.mask_decoder(
+            image_embeddings=image_embeddings,
+            image_pe=image_pe,
+            sparse_prompt_embeddings=sparse_prompt_embeddings,
+            dense_prompt_embeddings=dense_prompt_embeddings,
+            multimask_output=False,
+            repeat_image=False,
+            high_res_features=[high_res_feature_0, high_res_feature_1],
+        )
+
 def modify_filename(file_path, str_extension="_modified") -> Path:
     """
     Add the string str_extension before the file extension to the name of a file.
@@ -143,10 +178,22 @@ def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,51
                            torch.randn(1,512,16,16)]
             use_unpack_operator = False
         case "mask-decoder":
-            torch_model = predictor.sam_mask_decoder
-            torch_input = (torch.randn(1, 256, 32, 32),
-                           torch.randn(1, 256, 32, 32),
-                           torch.randn(1, 8, 256))
+            embed_size = int(predictor.sam_image_embedding_size)
+            torch_model = MaskDecoderOnnxWrapper(predictor.sam_mask_decoder)
+            torch_input = (torch.randn(1, 256, embed_size, embed_size),
+                           predictor.sam_prompt_encoder.get_dense_pe(),
+                           torch.randn(1, 8, 256),
+                           torch.randn(1, 256, embed_size, embed_size),
+                           torch.randn(1, 32, embed_size * 4, embed_size * 4),
+                           torch.randn(1, 64, embed_size * 2, embed_size * 2))
+            input_names = [
+                "image_embeddings",
+                "image_pe",
+                "sparse_prompt_embeddings",
+                "dense_prompt_embeddings",
+                "high_res_feature_0",
+                "high_res_feature_1",
+            ]
         case "mask-decoder-transformer":
             torch_model = predictor.sam_mask_decoder.transformer
             #tokens_limit = 16
@@ -183,14 +230,35 @@ def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,51
             exit()
     return (torch_model, torch_input, use_unpack_operator, input_names, d_axes)
 
-def export_model_block(m:ModelSource, block:str, out_dir:Path, img_shape:list, use_simplify:bool=False, opset_version:int=13):
+def export_model_block(
+    m: ModelSource,
+    block: str,
+    out_dir: Path,
+    img_shape: list,
+    use_simplify: bool = False,
+    simplify_tensor_size_threshold: str = "1.5GB",
+    opset_version: int = 13,
+):
     """
     Export a building block of nanosam2 to onnx. Not all blocks can be converted.
     """
     print(f"Exporting Model: {m.name} block: {block}...")
     out_dir.mkdir(parents=True, exist_ok=True)
-    predictor = build_sam2_video_predictor(m.cfg, m.checkpoint, torch.device("cpu"))
+    # Export is CPU-only here. On older GPUs (for example GTX 1070 / sm_61),
+    # a CUDA-enabled PyTorch wheel can still report cuda availability but cannot
+    # run its kernels. Disable positional-encoding CUDA cache warmup explicitly
+    # so Hydra model construction remains CPU-safe.
+    predictor = build_sam2_video_predictor(
+        m.cfg,
+        m.checkpoint,
+        torch.device("cpu"),
+        hydra_overrides_extra=[
+            "++model.image_encoder.neck.position_encoding.warmup_cache=false",
+            "++model.memory_encoder.position_encoding.warmup_cache=false",
+        ],
+    )
     torch_model, torch_input, use_unpack_operator, input_names, d_axes = get_block_and_inputs(predictor=predictor, block=block, img_shape=img_shape)
+    torch_model.eval()
       
     print(" - Testing torch model...", end="")
     test_torch_model(torch_model, torch_input, silent=True, use_unpack_operator=use_unpack_operator)
@@ -198,22 +266,27 @@ def export_model_block(m:ModelSource, block:str, out_dir:Path, img_shape:list, u
 
     print(" - Exporting to ONNX...", end="")
     export_path = out_dir / Path(f"{m.name}-{block}-sa1-v01-op{opset_version}.onnx")
-    torch.onnx.export(torch_model, torch_input, export_path, 
-                      export_params=True,
-                      opset_version=opset_version,
-                      simplify=True, 
-                      input_names=input_names,
-                      dynamic_axes=d_axes
-                      )
+    with torch.no_grad():
+        torch.onnx.export(torch_model, torch_input, export_path,
+                          export_params=True,
+                          opset_version=opset_version,
+                          dynamo=False,
+                          input_names=input_names,
+                          dynamic_axes=d_axes
+                          )
     print("OK")
     print(f" - Model stored in {export_path}")
+    remove_duplicate_outputs(export_path, export_path)
     
     if use_simplify:
         print(" - simplify model...", end="")
         model = onnx.load(export_path)
-        model, check = onnxsim.simplify(model)
+        model, check = onnxsim.simplify(
+            model,
+            tensor_size_threshold=simplify_tensor_size_threshold,
+        )
         if check:
-            export_path = modify_filename(export_path, str_extension="-simply")
+            export_path = modify_filename(export_path, str_extension="-simplified")
             onnx.save(model, export_path)
             print("OK")
             print(f" - Simplify model stored in {export_path}")
@@ -236,9 +309,9 @@ if __name__ == "__main__":
           "---"
           )
     models = [
-            ModelSource("sam2.1_small", "results/sam2.1_hiera_s/sam2.1_hiera_small.pt", "../sam2_configs/sam2.1_hiera_s.yaml"),
-            ModelSource("nanosam2-resnet18", "results/sam2.1_hiera_s_resnet18/checkpoint.pth", "../sam2_configs/nanosam2.1_resnet18.yaml"),
-            ModelSource("nanosam2-mobilenetV3", "results/sam2.1_hiera_s_mobilenetV3_large/checkpoint.pth", "../sam2_configs/nanosam2.1_mobilenet_v3_large.yaml")
+            ModelSource("sam2.1_small", REPO_ROOT / "results/sam2.1_hiera_s/sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml"),
+            ModelSource("nanosam2-resnet18", REPO_ROOT / "results/sam2.1_hiera_s_resnet18/checkpoint.pth", "nanosam2.1_resnet18.yaml"),
+            ModelSource("nanosam2-mobilenetV3", REPO_ROOT / "results/sam2.1_hiera_s_mobilenetV3_large/checkpoint.pth", "nanosam2.1_mobilenet_v3_large.yaml")
             ]
 
     valid_exports = [
@@ -267,10 +340,18 @@ if __name__ == "__main__":
     parser.add_argument("--encoder_type", type=str, default="resnet18", choices=valid_encoders)
     parser.add_argument("--opset", type=int, default=13)
     parser.add_argument("--simplify", action='store_true', help='Simplify model')
-
-    out_dir = Path("model_exports2")
+    parser.add_argument(
+        "--simplify-tensor-size-threshold",
+        type=str,
+        default="1.5GB",
+        help=(
+            "Maximum tensor size for onnxsim constant folding. Use a smaller "
+            "value such as 1MB to avoid simplified encoder models becoming larger."
+        ),
+    )
 
     args = parser.parse_args()
+    out_dir = Path(args.output_path)
 
     match args.encoder_type:
         case "hiera_small":
@@ -291,10 +372,26 @@ if __name__ == "__main__":
     
     if args.export != "all":
         # Export a single block or the whole nanosam2 model.
-        export_model_block(model, args.export, out_dir, args.img_shape, use_simplify=args.simplify, opset_version=args.opset)
+        export_model_block(
+            model,
+            args.export,
+            out_dir,
+            args.img_shape,
+            use_simplify=args.simplify,
+            simplify_tensor_size_threshold=args.simplify_tensor_size_threshold,
+            opset_version=args.opset,
+        )
     else:
         # Export all blocks as individuals.
         for b in valid_exports:
             if b == "all": continue
-            export_model_block(model, b, out_dir, args.img_shape, use_simplify=args.simplify, opset_version=args.opset)
+            export_model_block(
+                model,
+                b,
+                out_dir,
+                args.img_shape,
+                use_simplify=args.simplify,
+                simplify_tensor_size_threshold=args.simplify_tensor_size_threshold,
+                opset_version=args.opset,
+            )
     print("done.")
