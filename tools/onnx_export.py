@@ -81,6 +81,26 @@ class PromptEncoderOnnxWrapper(torch.nn.Module):
         return sparse_embeddings, dense_embeddings, image_pe
 
 
+class ImageFeaturesOnnxWrapper(torch.nn.Module):
+    """Export image features exactly as SAM2ImagePredictor feeds the decoder."""
+
+    def __init__(self, predictor: torch.nn.Module):
+        super().__init__()
+        self.predictor = predictor
+        self.feature_sizes = [(256, 256), (128, 128), (64, 64)]
+
+    def forward(self, image: torch.Tensor):
+        backbone_out = self.predictor.forward_image(image)
+        _, vision_feats, _, _ = self.predictor._prepare_backbone_features(backbone_out)
+        if self.predictor.directly_add_no_mem_embed:
+            vision_feats[-1] = vision_feats[-1] + self.predictor.no_mem_embed
+        feats = [
+            feat.permute(1, 2, 0).view(image.shape[0], -1, *feat_size)
+            for feat, feat_size in zip(vision_feats[::-1], self.feature_sizes[::-1])
+        ][::-1]
+        return feats[-1], feats[0], feats[1]
+
+
 def modify_filename(file_path, str_extension="_modified") -> Path:
     """
     Add the string str_extension before the file extension to the name of a file.
@@ -189,6 +209,7 @@ def test_torch_model(torch_model:torch.nn, input, silent=False, use_unpack_opera
 
 def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,512]):
     input_names = ["input"]
+    output_names = None
     d_axes = None
     use_unpack_operator = True
     match block:
@@ -199,6 +220,11 @@ def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,51
         case "image-encoder":
             torch_model = predictor.image_encoder
             torch_input = (torch.randn(1,img_shape[0],img_shape[1],img_shape[2]),)
+        case "image-features":
+            torch_model = ImageFeaturesOnnxWrapper(predictor)
+            torch_input = (torch.randn(1, img_shape[0], img_shape[1], img_shape[2]),)
+            input_names = ["input"]
+            output_names = ["image_embeddings", "high_res_feature_0", "high_res_feature_1"]
         case "image-encoder-trunk":
             torch_model = predictor.image_encoder.trunk
             torch_input = (torch.randn(1,img_shape[0],img_shape[1],img_shape[2]),)
@@ -267,7 +293,7 @@ def get_block_and_inputs(predictor:torch.nn, block:str, img_shape:list=[3,512,51
         case _:
             print(f"Unknown model block: {block}")
             exit()
-    return (torch_model, torch_input, use_unpack_operator, input_names, d_axes)
+    return (torch_model, torch_input, use_unpack_operator, input_names, output_names, d_axes)
 
 def export_model_block(
     m: ModelSource,
@@ -296,7 +322,11 @@ def export_model_block(
             "++model.memory_encoder.position_encoding.warmup_cache=false",
         ],
     )
-    torch_model, torch_input, use_unpack_operator, input_names, d_axes = get_block_and_inputs(predictor=predictor, block=block, img_shape=img_shape)
+    torch_model, torch_input, use_unpack_operator, input_names, output_names, d_axes = get_block_and_inputs(
+        predictor=predictor,
+        block=block,
+        img_shape=img_shape,
+    )
     torch_model.eval()
       
     print(" - Testing torch model...", end="")
@@ -311,6 +341,7 @@ def export_model_block(
                           opset_version=opset_version,
                           dynamo=False,
                           input_names=input_names,
+                          output_names=output_names,
                           dynamic_axes=d_axes
                           )
     print("OK")
@@ -357,6 +388,7 @@ if __name__ == "__main__":
         "nanosam2",
         "all",
         "image-encoder",
+        "image-features",
         "image-encoder-trunk",
         "image-encoder-neck",
         "mask-decoder",

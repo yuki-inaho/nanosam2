@@ -168,3 +168,5 @@ cython_debug/
 model_exports/*
 model_exports2/*
 videos/*
+# OpenVINO exported model artifacts
+model_exports_openvino/*
